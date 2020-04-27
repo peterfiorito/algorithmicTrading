@@ -1,0 +1,81 @@
+from decimal import Decimal
+
+class RSI_based_reversal(QCAlgorithm):
+
+    def Initialize(self):
+        self.SetStartDate(2006,10, 7)  #Set Start Date
+        self.SetEndDate(2020,1,10)    #Set End Date
+        self.SetCash(10000)           #Set Strategy Cash
+        # Import symbol
+        self.symbol = "EURUSD"
+        self.forex = self.AddForex(self.symbol, Resolution.Hour, Market.FXCM)
+        # Import quantifications
+        self.rsi = self.RSI(self.symbol, 5, MovingAverageType.Simple)
+        self.ema = self.EMA(self.symbol, 200)
+        # Tracking properties
+        self.price = None
+        self.long = None
+        self.fill_price_long = None
+        self.short = None
+        self.fill_price_short = None
+        self.stopShort = None
+        self.stopLong = None
+        # set the brokerage model
+        self.SetBrokerageModel(BrokerageName.FxcmBrokerage)
+        self.positionSize = int((self.Portfolio.Cash * 10)/100)
+
+    def OnData(self, data):
+        # Defensive strategy to avoid errors
+        if not self.rsi.IsReady or not self.ema.IsReady:
+            self.Error("not loaded")
+            return
+        
+        self.price = data[self.symbol].Close
+        
+        # Long orders
+        if self.long is None and self.price < self.ema.Current.Value and self.rsi.Current.Value < 15:
+            self.Transactions.CancelOpenOrders()
+            self.Debug("Open long")
+            opex_offset = self.price + round(Decimal(0.01),2)
+            self.StopMarketOrder(self.symbol, self.positionSize, opex_offset, "Open long")
+            self.stopLong = data[self.symbol].Low
+            
+        
+        # Short orders
+        if self.short is None and self.price > self.ema.Current.Value and self.rsi.Current.Value > 85:
+            self.Transactions.CancelOpenOrders()
+            self.Debug("Open short")
+            opex_offset = self.price - round(Decimal(0.01),2)
+            self.StopMarketOrder(self.symbol, -self.positionSize, opex_offset, "Open short")
+            self.stopShort = data[self.symbol].High
+        
+        # Closing rules Long
+        if self.long is not None and self.rsi.Current.Value > 85 and self.price > self.fill_price_long * 1.01:
+            self.Debug("Closing Long")
+            self.MarketOrder(self.symbol, -self.positionSize, False, "TP long")
+            self.long = None
+        
+        # Closing rules Short
+        if self.short is not None and self.rsi.Current.Value < 15 and self.price < self.fill_price_short * 0.91:
+            self.MarketOrder(self.symbol, self.positionSize, False, "TP short")
+            self.short = None
+            
+        # Stop loss closes
+        if (self.long is not None and self.price < self.stopLong):
+            self.MarketOrder(self.symbol, -self.positionSize, False, "SL long")
+            self.long = None
+            
+        if (self.short is not None and self.price > self.stopShort):
+            self.MarketOrder(self.symbol, self.positionSize, False, "SL short")
+            self.short = None
+                
+    def OnOrderEvent(self, orderEvent):
+        order = self.Transactions.GetOrderById(orderEvent.OrderId)
+        if orderEvent.Status == OrderStatus.Filled: 
+            self.Log("{0}: {1}: {2}".format(self.Time, order.Type, orderEvent))
+            if (order.Tag == "Open short"):
+                self.fill_price_short = orderEvent.FillPrice
+                self.short = order
+            elif (order.Tag == "Open long"):
+                self.fill_price_long = orderEvent.FillPrice;
+                self.long = order
