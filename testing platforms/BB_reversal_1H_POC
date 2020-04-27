@@ -1,0 +1,100 @@
+class smallBBSetup(QCAlgorithm):
+
+    def Initialize(self):
+        self.SetStartDate(2004, 12, 22)  # Set Start Date
+        self.SetEndDate(2020,1,10) 
+        self.SetCash(100000)  # Set Strategy Cash
+        self.symbol = "EURUSD"
+        self.resolution = Resolution.Hour
+        self.forex = self.AddForex(self.symbol, self.resolution, Market.FXCM)
+        self.positionSize = int(100000)
+        self.Hammer = self.is_hammer_candle
+        self.BBand = self.BB(self.symbol, 20, 2.5, MovingAverageType.Simple, self.resolution)
+        self.rsi = self.RSI(self.symbol, 14, MovingAverageType.Simple, self.resolution)
+        self.open_long = self.open_long_position
+        self.open_short = self.open_short_position
+        # Order Management stuff
+        self.long = None
+        self.long_price_stop = None
+        self.long_price_TP = None
+        self.short = None
+        self.short_price_stop = None
+        self.short_price_TP = None
+        self.fill_price_long = None
+        self.fill_price_short = None
+        
+    def OnData(self, data):
+        # lastTrade, bidPrice, askPrice, volume, bidSize, askSize
+        # self.price = data[self.symbol].Close
+        
+        is_hammer = self.Hammer(data)
+        if(is_hammer and data[self.symbol].High > self.BBand.UpperBand.Current.Value and self.rsi.Current.Value > 80 and self.long is None):
+            self.open_short(data)
+        elif (is_hammer and data[self.symbol].Low < self.BBand.LowerBand.Current.Value and self.rsi.Current.Value < 20 and self.short is None):
+            self.open_long(data)
+        
+        if (self.long is not None and self.fill_price_long != 0 and data[self.symbol].Close <= self.long_price_stop):
+            symbol = self.symbol
+            position_size = self.positionSize
+            self.MarketOrder(symbol, -position_size, False, "Stop Long position")
+            self.long = None
+            
+        if (self.short is not None and self.fill_price_short and data[self.symbol].Close >= self.short_price_stop):
+            symbol = self.symbol
+            position_size = self.positionSize
+            self.MarketOrder(symbol, position_size, False, "Stop Short position")
+            self.short = None
+        
+        if(self.short is not None and self.fill_price_short != 0 and data[self.symbol].Close <= self.fill_price_long * 0.91):
+            symbol = self.symbol
+            position_size = self.positionSize
+            self.MarketOrder(symbol, position_size, False, "TP Short position")
+            self.short = None
+            
+        if(self.long is not None and self.fill_price_long != 0 and data[self.symbol].Close >= self.fill_price_long * 1.01):
+            symbol = self.symbol
+            position_size = self.positionSize
+            self.MarketOrder(symbol, -position_size, False, "TP Long position")
+            self.long = None
+            
+
+    def is_hammer_candle(self, data):
+        # Instance of bar with current data
+        # IBR is % of bar below close value
+        # IBR > 70% and absolute value(open-close) / range <= 30%
+        fxQuoteBars = data.QuoteBars
+        current_bar = fxQuoteBars[self.symbol]
+        range_value = (current_bar.Open - current_bar.Close) / (current_bar.High - current_bar.Low) if (current_bar.High - current_bar.Low) != 0 else 0
+        IBR = (current_bar.Close - current_bar.Low) / (current_bar.High - current_bar.Low) if (current_bar.High - current_bar.Low) != 0 else 0
+        
+        return True if abs(IBR) > 0.7 and abs(range_value) <= 0.30 else False
+    
+    def open_long_position(self, data):
+        # Set a stop market at the high of the current candle
+        if(self.long is None):
+            long_price_buy =  round(data[self.symbol].Close + 0.0001, 2)
+            self.long_price_stop =  round(data[self.symbol].Low - 0.0001, 2)
+            self.long_price_TP = self.BBand.UpperBand.Current.Value
+            self.Transactions.CancelOpenOrders()
+            self.StopMarketOrder(self.symbol, self.positionSize, long_price_buy, "Open long")
+        
+    
+    def open_short_position(self, data):
+        # Set a stop market at the Low of the current candle
+        if(self.short is None):
+            short_price_short = round(data[self.symbol].Close + 0.0001, 2)
+            self.short_price_stop = round(data[self.symbol].High - 0.0001, 2)
+            self.short_price_TP = self.BBand.LowerBand.Current.Value
+            self.Transactions.CancelOpenOrders()
+            self.StopMarketOrder(self.symbol, -self.positionSize, short_price_short, "Open short")
+    
+    def OnOrderEvent(self, orderEvent):
+        order = self.Transactions.GetOrderById(orderEvent.OrderId)
+        if orderEvent.Status == OrderStatus.Filled: 
+            self.Log("{0}: {1}: {2}".format(self.Time, order.Type, orderEvent))
+            if (order.Tag == "Open short"):
+                self.fill_price_short = orderEvent.FillPrice
+                self.short = order
+            elif (order.Tag == "Open long"):
+                self.fill_price_long = orderEvent.FillPrice;
+                self.long = order
